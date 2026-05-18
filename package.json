@@ -24,7 +24,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@stackra/contracts": "workspace:*",
+    "@stackra/contracts": "github:stackra-inc/contracts#main",
     "rxjs": "^7.8.2"
   },
   "peerDependencies": {
