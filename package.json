@@ -45,7 +45,7 @@
     }
   },
   "devDependencies": {
-    "@playwright/test": "catalog:test",
+    "@playwright/test": "^1.60.0",
     "@stackra/testing": "workspace:*",
     "@stackra/ts-container": "github:stackra-inc/ts-container#main",
     "@stackra/ts-events": "github:stackra-inc/ts-events#main",
