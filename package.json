@@ -1,0 +1,67 @@
+{
+  "name": "@stackra/ts-coordinator",
+  "version": "0.1.0",
+  "description": "Cross-tab coordination primitives: leader election, distributed locks, tab awareness, and event transport for the @stackra monorepo.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "check-types": "tsc --noEmit",
+    "clean": "rm -rf dist node_modules/.cache",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@stackra/contracts": "workspace:*",
+    "rxjs": "catalog:"
+  },
+  "peerDependencies": {
+    "@stackra/ts-container": "workspace:*",
+    "@stackra/ts-events": "workspace:*",
+    "@stackra/ts-logger": "workspace:*",
+    "react": "catalog:react"
+  },
+  "peerDependenciesMeta": {
+    "@stackra/ts-events": {
+      "optional": true
+    },
+    "@stackra/ts-logger": {
+      "optional": false
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "catalog:test",
+    "@stackra/testing": "workspace:*",
+    "@stackra/ts-container": "workspace:*",
+    "@stackra/ts-events": "workspace:*",
+    "@stackra/ts-logger": "workspace:*",
+    "@stackra/typescript-config": "catalog:stackra",
+    "@types/react": "catalog:react",
+    "react": "catalog:react"
+  },
+  "author": {
+    "name": "Stackra L.L.C",
+    "email": "dev@stackra.com",
+    "url": "https://stackra.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "stackra",
+    "typescript"
+  ]
+}
