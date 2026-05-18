@@ -25,13 +25,13 @@
   },
   "dependencies": {
     "@stackra/contracts": "workspace:*",
-    "rxjs": "catalog:"
+    "rxjs": "^7.8.2"
   },
   "peerDependencies": {
-    "@stackra/ts-container": "workspace:*",
-    "@stackra/ts-events": "workspace:*",
-    "@stackra/ts-logger": "workspace:*",
-    "react": "catalog:react"
+    "@stackra/ts-container": "*",
+    "@stackra/ts-events": "*",
+    "@stackra/ts-logger": "*",
+    "react": "^19.2.6"
   },
   "peerDependenciesMeta": {
     "@stackra/ts-events": {
@@ -47,12 +47,12 @@
   "devDependencies": {
     "@playwright/test": "catalog:test",
     "@stackra/testing": "workspace:*",
-    "@stackra/ts-container": "workspace:*",
-    "@stackra/ts-events": "workspace:*",
-    "@stackra/ts-logger": "workspace:*",
-    "@stackra/typescript-config": "catalog:stackra",
-    "@types/react": "catalog:react",
-    "react": "catalog:react"
+    "@stackra/ts-container": "github:stackra-inc/ts-container#main",
+    "@stackra/ts-events": "github:stackra-inc/ts-events#main",
+    "@stackra/ts-logger": "github:stackra-inc/ts-logger#main",
+    "@stackra/typescript-config": "^1.0.12",
+    "@types/react": "^19.2.14",
+    "react": "^19.2.6"
   },
   "author": {
     "name": "Stackra L.L.C",
