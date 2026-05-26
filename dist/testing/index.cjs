@@ -1471,7 +1471,7 @@ DiscoveryService = __decorateClass([
   Injectable()
 ], DiscoveryService);
 
-// node_modules/.pnpm/@stackra+ts-container@https+++codeload.github.com+stackra-inc+ts-container+tar.gz+38bc4_5c5ef5c5afc02c43cdf8b88e795dd1b3/node_modules/@stackra/ts-container/dist/index.js
+// node_modules/.pnpm/@stackra+ts-container@https+++codeload.github.com+stackra-inc+ts-container+tar.gz+f928d_f2e3b1897e242403a4c440ca1c44bd7c/node_modules/@stackra/ts-container/dist/index.js
 __toESM(require_Reflect());
 var PROPERTY_TO_METADATA_KEY = {
   imports: MODULE_METADATA.IMPORTS,
