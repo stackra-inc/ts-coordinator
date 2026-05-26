@@ -27,11 +27,7 @@
     "rxjs": "^7.8.2"
   },
   "peerDependencies": {
-    "@stackra/ts-container": "*",
-    "@stackra/ts-events": "*",
-    "@stackra/ts-logger": "*",
-    "react": "^19.2.6",
-    "@stackra/contracts": "*"
+    "react": "^19.2.6"
   },
   "peerDependenciesMeta": {
     "@stackra/ts-events": {
