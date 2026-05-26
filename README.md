@@ -33,6 +33,14 @@ Production apps should NOT run duplicate work in every tab:
 pnpm add @stackra/ts-coordinator
 ```
 
+### Peer Dependencies
+
+```bash
+pnpm add @stackra/contracts @stackra/ts-container @stackra/ts-logger rxjs
+# Optional:
+pnpm add @stackra/ts-events react
+```
+
 ## Quick Start
 
 ```typescript
@@ -46,6 +54,26 @@ import { CoordinatorModule } from "@stackra/ts-coordinator";
       heartbeatMs: 1000,
       staleThresholdMs: 3000,
       broadcastPatterns: ["sync:**", "auth:**", "state:**"],
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+### Async Configuration
+
+```typescript
+import { Module } from "@stackra/ts-container";
+import { CoordinatorModule } from "@stackra/ts-coordinator";
+
+@Module({
+  imports: [
+    CoordinatorModule.forRootAsync({
+      useFactory: async (configService) => ({
+        channelName: configService.get("COORDINATOR_CHANNEL"),
+        heartbeatMs: configService.get("COORDINATOR_HEARTBEAT_MS"),
+      }),
+      inject: [ConfigService],
     }),
   ],
 })
@@ -180,14 +208,84 @@ Only the leader tab holds the WebSocket connection. Events received via WS are
 emitted into `@stackra/ts-events`, and the `CoordinatorTransport` automatically
 relays them to follower tabs.
 
+## Leader Election Strategy
+
+The package uses a **dual-strategy** approach for leader election:
+
+### Primary: Web Locks API (when available)
+
+Uses `navigator.locks.request()` for race-free leader election. The tab that
+holds the lock is the leader. When it closes or crashes, the lock is
+automatically released and the next waiting tab gets it instantly.
+
+**Advantages:**
+
+- Zero race conditions
+- Instant failover (no stale threshold delay)
+- No heartbeat overhead
+
+### Fallback: BroadcastChannel Heartbeat Protocol
+
+For browsers without Web Locks support, falls back to a heartbeat-based
+protocol with epoch-based election rounds and lowest-ID tiebreaking.
+
+**Instant failover:** The `pagehide` event is used to immediately resign
+leadership when a tab closes, so other tabs don't have to wait for the
+stale threshold.
+
 ## Browser APIs Used
 
-| API                 | Purpose              | Fallback           |
-| ------------------- | -------------------- | ------------------ |
-| `BroadcastChannel`  | Messaging + election | Always-leader mode |
-| `Web Locks API`     | Distributed locks    | localStorage locks |
-| `visibilitychange`  | Focused tab tracking | Disabled           |
-| `crypto.randomUUID` | Tab ID generation    | timestamp + random |
+| API                 | Purpose              | Fallback            |
+| ------------------- | -------------------- | ------------------- |
+| `Web Locks API`     | Leader election      | Heartbeat protocol  |
+| `BroadcastChannel`  | Messaging + census   | localStorage events |
+| `Web Locks API`     | Distributed locks    | localStorage locks  |
+| `visibilitychange`  | Focused tab tracking | Disabled            |
+| `pagehide`          | Instant failover     | stale threshold     |
+| `crypto.randomUUID` | Tab ID generation    | timestamp + random  |
+
+## Configuration Options
+
+| Option                   | Type       | Default                              | Description                                |
+| ------------------------ | ---------- | ------------------------------------ | ------------------------------------------ |
+| `channelName`            | `string`   | `"stackra-coordinator"`              | BroadcastChannel name for coordination     |
+| `heartbeatMs`            | `number`   | `1000`                               | Leader heartbeat interval (ms)             |
+| `staleThresholdMs`       | `number`   | `3000`                               | Time before leader is considered dead (ms) |
+| `broadcastEvents`        | `boolean`  | `true`                               | Enable cross-tab event relay               |
+| `broadcastPatterns`      | `string[]` | `["sync:**", "auth:**", "state:**"]` | Event patterns to relay                    |
+| `preferWebLocks`         | `boolean`  | `true`                               | Use Web Locks API for distributed locks    |
+| `preferWebLocksElection` | `boolean`  | `true`                               | Use Web Locks API for leader election      |
+| `preferVisibleLeader`    | `boolean`  | `false`                              | Transfer leadership to visible/focused tab |
+
+## Testing
+
+### Unit Tests
+
+```bash
+pnpm test
+```
+
+### E2E Tests (Playwright)
+
+```bash
+# Start your app first
+APP_URL=http://localhost:5173 pnpm test:e2e
+```
+
+### Test Helpers
+
+Expose coordinator internals for Playwright assertions:
+
+```typescript
+// main.tsx (dev only)
+if (import.meta.env.DEV) {
+  import("@stackra/ts-coordinator/testing").then(
+    ({ exposeCoordinatorTestGlobals }) => {
+      exposeCoordinatorTestGlobals();
+    },
+  );
+}
+```
 
 ## License
 

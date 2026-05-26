@@ -1,4 +1,4 @@
-import { IDynamicModule } from '@stackra/ts-container';
+import { DynamicModule, OnModuleDestroy } from '@stackra/ts-container';
 import { Observable } from 'rxjs';
 import { IEventTransport } from '@stackra/contracts';
 export { COORDINATOR_CONFIG, TAB_COORDINATOR, TAB_LOCK_MANAGER } from '@stackra/contracts';
@@ -79,11 +79,22 @@ interface CoordinatorModuleOptions {
      * Whether to prefer the Web Locks API for distributed locks
      * when available (Chrome 69+, Firefox 96+, Safari 15.4+).
      *
-     * Falls back to BroadcastChannel-based locking when unavailable.
+     * Falls back to localStorage-based locking when unavailable.
      *
      * @default true
      */
     preferWebLocks?: boolean;
+    /**
+     * Whether to use the Web Locks API for leader election when available.
+     *
+     * When true, leader election uses `navigator.locks.request()` which is
+     * race-free and provides instant failover when a tab closes (the lock
+     * is automatically released). Falls back to the heartbeat protocol
+     * when Web Locks is unavailable.
+     *
+     * @default true
+     */
+    preferWebLocksElection?: boolean;
     /**
      * Whether to transfer leadership to the focused/visible tab.
      *
@@ -94,6 +105,22 @@ interface CoordinatorModuleOptions {
      * @default false
      */
     preferVisibleLeader?: boolean;
+}
+/**
+ * Async factory for coordinator module options.
+ *
+ * Use with `CoordinatorModule.forRootAsync()` when configuration
+ * needs to be resolved asynchronously.
+ */
+interface CoordinatorModuleAsyncOptions {
+    /**
+     * Factory function that returns the coordinator options.
+     */
+    useFactory: (...args: unknown[]) => Promise<CoordinatorModuleOptions> | CoordinatorModuleOptions;
+    /**
+     * Dependencies to inject into the factory function.
+     */
+    inject?: unknown[];
 }
 
 /**
@@ -114,7 +141,7 @@ interface CoordinatorModuleOptions {
  * CoordinatorModule — Cross-tab coordination primitives.
  *
  * Provides leader election, distributed locks, and cross-tab event relay.
- * Import once in your root module via `forRoot()`.
+ * Import once in your root module via `forRoot()` or `forRootAsync()`.
  *
  * The `CoordinatorTransport` is auto-discovered by `@stackra/ts-events`
  * at bootstrap (via the `@EventTransport` decorator) — no manual wiring needed.
@@ -140,29 +167,42 @@ interface CoordinatorModuleOptions {
  *
  * @example
  * ```typescript
- * // Consuming in other services:
- * @Injectable()
- * class SyncEngine {
- *   constructor(@InjectCoordinator() private readonly coordinator: TabCoordinator) {
- *     coordinator.role$.subscribe(role => {
- *       if (role === "leader") this.startAutoSync();
- *       else this.stopAutoSync();
- *     });
- *   }
- * }
+ * // Async configuration (e.g., from a remote config service)
+ * @Module({
+ *   imports: [
+ *     CoordinatorModule.forRootAsync({
+ *       useFactory: async (configService) => ({
+ *         channelName: configService.get("COORDINATOR_CHANNEL"),
+ *         heartbeatMs: configService.get("COORDINATOR_HEARTBEAT_MS"),
+ *       }),
+ *       inject: [ConfigService],
+ *     }),
+ *   ],
+ * })
+ * export class AppModule {}
  * ```
  */
 declare class CoordinatorModule {
     /**
-     * Configure the coordinator module.
+     * Configure the coordinator module with static options.
      *
      * Call once in your root module. Registers the TabCoordinator,
      * LockManager, and CoordinatorTransport globally.
      *
      * @param config - Coordinator configuration options
-     * @returns A IDynamicModule with all coordinator providers
+     * @returns A DynamicModule with all coordinator providers
      */
-    static forRoot(config?: CoordinatorModuleOptions): IDynamicModule;
+    static forRoot(config?: CoordinatorModuleOptions): DynamicModule;
+    /**
+     * Configure the coordinator module with async options.
+     *
+     * Use when configuration needs to be resolved asynchronously
+     * (e.g., from a remote config service, IndexedDB, or API).
+     *
+     * @param options - Async configuration options with factory
+     * @returns A DynamicModule with all coordinator providers
+     */
+    static forRootAsync(options: CoordinatorModuleAsyncOptions): DynamicModule;
 }
 
 /**
@@ -193,8 +233,9 @@ type TabRole = "leader" | "follower";
  * @fileoverview TabCoordinator — Leader election and tab awareness.
  *
  * Provides a single source of truth for which tab is the "leader" in a
- * multi-tab browser environment. Uses the native BroadcastChannel API
- * with a heartbeat-based leader election protocol.
+ * multi-tab browser environment. Uses the Web Locks API for race-free
+ * leader election when available, falling back to a BroadcastChannel
+ * heartbeat-based protocol.
  *
  * Other packages (`ts-queue`, `ts-sync`, `ts-realtime`) consume this
  * service to ensure only one tab performs expensive operations (sync,
@@ -209,7 +250,7 @@ type TabRole = "leader" | "follower";
  *
  * Responsibilities:
  * - Elect a single leader tab from all open tabs
- * - Detect leader failure via heartbeat timeout
+ * - Detect leader failure via heartbeat timeout (or Web Locks release)
  * - Track active tabs (census)
  * - Emit role changes as an RxJS observable
  * - Optionally prefer the visible/focused tab as leader
@@ -235,7 +276,7 @@ type TabRole = "leader" | "follower";
  * }
  * ```
  */
-declare class TabCoordinator {
+declare class TabCoordinator implements OnModuleDestroy {
     private readonly logger;
     /** Unique identifier for this tab instance. */
     private readonly tabId;
@@ -247,21 +288,38 @@ declare class TabCoordinator {
     private leaderId;
     /** Epoch ms of the last heartbeat received from the leader. */
     private lastHeartbeatAt;
+    /** Election epoch — incremented on each new election round. */
+    private electionEpoch;
     /** Heartbeat timer handle (active only when this tab is leader). */
     private heartbeatTimer;
     /** Stale-check timer handle (active only when this tab is follower). */
     private staleCheckTimer;
+    /** Pending claim timeout (for cancellation). */
+    private claimTimeout;
     /** Known tabs with their last-seen timestamps. */
     private readonly knownTabs;
     /** Role subject for reactive subscriptions. */
     private readonly roleSubject;
+    /** Tab count subject for reactive subscriptions. */
+    private readonly tabCountSubject;
     /** Visibility change handler reference for cleanup. */
-    private readonly visibilityHandler;
+    private visibilityHandler;
+    /** Page hide handler reference for cleanup. */
+    private pageHideHandler;
+    /** Whether this instance has been destroyed. */
+    private destroyed;
+    /** AbortController for Web Locks election (to cancel on destroy). */
+    private webLocksAbortController;
     /**
      * Observable that emits the current tab's role.
      * Only emits on actual role changes (distinctUntilChanged).
      */
     readonly role$: Observable<TabRole>;
+    /**
+     * Observable that emits the current active tab count.
+     * Only emits on actual count changes.
+     */
+    readonly tabCount$: Observable<number>;
     constructor(config?: CoordinatorModuleOptions);
     /**
      * Whether this tab is currently the leader.
@@ -310,6 +368,18 @@ declare class TabCoordinator {
      */
     destroy(): void;
     /**
+     * Lifecycle hook — called by the DI container on module destroy.
+     */
+    onModuleDestroy(): void;
+    /**
+     * Start leader election using the Web Locks API.
+     *
+     * The tab that holds the lock is the leader. When it closes or crashes,
+     * the lock is automatically released and the next waiting tab gets it.
+     * This is race-free and provides instant failover.
+     */
+    private startWebLocksElection;
+    /**
      * Announce this tab's presence to all peers.
      */
     private announce;
@@ -322,6 +392,10 @@ declare class TabCoordinator {
      */
     private claimLeadership;
     /**
+     * Cancel a pending claim timeout.
+     */
+    private cancelPendingClaim;
+    /**
      * Promote this tab to leader.
      */
     private becomeLeader;
@@ -329,6 +403,11 @@ declare class TabCoordinator {
      * Handle incoming messages from peer tabs.
      */
     private onMessage;
+    private onHeartbeat;
+    private onClaim;
+    private onResigned;
+    private onAnnounce;
+    private onYieldRequest;
     /**
      * Start the heartbeat timer (leader only).
      */
@@ -349,9 +428,16 @@ declare class TabCoordinator {
      * Handle visibility change events.
      *
      * When `preferVisibleLeader` is enabled, a visible follower tab
-     * will attempt to claim leadership from a hidden leader.
+     * will send a yield request to the hidden leader.
      */
     private onVisibilityChange;
+    /**
+     * Handle page hide / beforeunload events.
+     *
+     * Immediately resigns leadership so other tabs don't have to wait
+     * for the stale threshold to expire.
+     */
+    private onPageHide;
     /**
      * Post a message to the BroadcastChannel (no-op if channel unavailable).
      */
@@ -360,6 +446,14 @@ declare class TabCoordinator {
      * Update the role subject if the role actually changed.
      */
     private updateRole;
+    /**
+     * Update the tab count subject.
+     */
+    private updateTabCount;
+    /**
+     * Check if the Web Locks API is available.
+     */
+    private isWebLocksAvailable;
     /**
      * Generate a unique tab identifier.
      *
@@ -375,7 +469,7 @@ declare class TabCoordinator {
  * run in one tab at a time (sync, auth token refresh, IndexedDB migrations).
  *
  * Uses the Web Locks API when available (Chrome 69+, Firefox 96+, Safari 15.4+),
- * falls back to a BroadcastChannel-based lock protocol.
+ * falls back to a localStorage-based lock protocol.
  *
  * @module @stackra/ts-coordinator
  * @category Services
@@ -400,9 +494,11 @@ declare class TabCoordinator {
  * }, { timeoutMs: 5000 });
  * ```
  */
-declare class LockManager {
+declare class LockManager implements OnModuleDestroy {
     private readonly preferWebLocks;
     private readonly channelName;
+    /** Track active abort controllers for cleanup. */
+    private readonly activeControllers;
     constructor(config?: CoordinatorModuleOptions);
     /**
      * Acquire a named lock and run the callback.
@@ -432,6 +528,10 @@ declare class LockManager {
      * @param name - Lock name to check
      */
     isLocked(name: string): Promise<boolean>;
+    /**
+     * Lifecycle hook — called by the DI container on module destroy.
+     */
+    onModuleDestroy(): void;
     /**
      * Acquire lock using the Web Locks API.
      */
@@ -497,12 +597,14 @@ interface LockOptions {
  * // → All other tabs receive this event via their local EventEmitter
  * ```
  */
-declare class CoordinatorTransport implements IEventTransport {
+declare class CoordinatorTransport implements IEventTransport, OnModuleDestroy {
     private readonly logger;
     /** BroadcastChannel for event relay. */
     private channel;
     /** Reference to the local EventEmitter. */
     private emitter;
+    /** Original emit function (stored for restoration on disconnect). */
+    private originalEmit;
     /** Unique ID for this tab to prevent echo. */
     private readonly senderId;
     /** Whether we're currently processing an incoming message (prevents re-broadcast). */
@@ -524,13 +626,20 @@ declare class CoordinatorTransport implements IEventTransport {
     connect(emitter: unknown): void;
     /**
      * Disconnect the transport. Called during application shutdown.
+     *
+     * Restores the original emit method and closes the BroadcastChannel.
      */
     disconnect(): void;
+    /**
+     * Lifecycle hook — called by the DI container on module destroy.
+     */
+    onModuleDestroy(): void;
     /**
      * Hook into the emitter to intercept outgoing events.
      *
      * Wraps the emitter's `emit` method to broadcast matching events
-     * to other tabs via BroadcastChannel.
+     * to other tabs via BroadcastChannel. Stores the original for
+     * restoration on disconnect.
      */
     private hookEmitter;
     /**
@@ -543,7 +652,7 @@ declare class CoordinatorTransport implements IEventTransport {
     private matchesPatterns;
     /**
      * Simple wildcard matching.
-     * - `*` matches one segment (delimited by `.`)
+     * - `*` matches one segment (delimited by `:`)
      * - `**` matches one or more segments
      */
     private matchWildcard;
@@ -637,9 +746,9 @@ declare function useIsLeader(): boolean;
 /**
  * React hook that returns the number of active tabs.
  *
- * Updates periodically as tabs join or leave.
+ * Subscribes to the reactive `tabCount$` observable for efficient updates
+ * without polling. Falls back to polling if the observable is unavailable.
  *
- * @param pollIntervalMs - How often to refresh the count (default: 2000ms)
  * @returns The number of active tabs
  *
  * @example
@@ -650,7 +759,7 @@ declare function useIsLeader(): boolean;
  * }
  * ```
  */
-declare function useTabCount(pollIntervalMs?: number): number;
+declare function useTabCount(): number;
 
 /**
  * @fileoverview Coordinator inject proxy — Global coordinator access.
@@ -767,4 +876,4 @@ declare class CoordinatorError extends Error {
  */
 declare function defineConfig(config: CoordinatorModuleOptions): CoordinatorModuleOptions;
 
-export { CoordinatorError, CoordinatorModule, CoordinatorTransport, InjectCoordinator, InjectLockManager, LockManager, TabCoordinator, type TabInfo, type TabRole, coordinator, defineConfig, lock, useIsLeader, useTabCount };
+export { CoordinatorError, CoordinatorModule, type CoordinatorModuleAsyncOptions, type CoordinatorModuleOptions, CoordinatorTransport, InjectCoordinator, InjectLockManager, LockManager, type LockOptions, TabCoordinator, type TabInfo, type TabRole, coordinator, defineConfig, lock, useIsLeader, useTabCount };

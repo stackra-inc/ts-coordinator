@@ -8,7 +8,9 @@
  * ```typescript
  * // main.tsx (dev only)
  * if (import.meta.env.DEV) {
- *   import("@stackra/ts-coordinator/testing/expose-test-globals");
+ *   import("@stackra/ts-coordinator/testing").then(({ exposeCoordinatorTestGlobals }) => {
+ *     exposeCoordinatorTestGlobals();
+ *   });
  * }
  * ```
  *
@@ -30,7 +32,7 @@ export function exposeCoordinatorTestGlobals(): void {
 
   const coordinator = inject<TabCoordinator>(TAB_COORDINATOR);
   const lockManager = inject<LockManager>(TAB_LOCK_MANAGER);
-  const win = window as any;
+  const win = window as unknown as Record<string, unknown>;
 
   // Track role
   win.__coordinatorRole = coordinator.getRole();
@@ -38,23 +40,28 @@ export function exposeCoordinatorTestGlobals(): void {
     win.__coordinatorRole = role;
   });
 
-  // Track tab count
+  // Track tab count reactively
   win.__coordinatorTabCount = coordinator.getTabCount();
-  setInterval(() => {
-    win.__coordinatorTabCount = coordinator.getTabCount();
-  }, 1000);
+  coordinator.tabCount$.subscribe((count) => {
+    win.__coordinatorTabCount = count;
+  });
 
   // Track received events (populated by the app's event listeners)
-  win.__coordinatorReceivedEvents = win.__coordinatorReceivedEvents ?? [];
+  win.__coordinatorReceivedEvents =
+    (win.__coordinatorReceivedEvents as string[]) ?? [];
 
   // Emit test event helper
   win.__emitTestEvent = (eventName: string, payload: unknown) => {
     try {
-      // Import dynamically to avoid hard dep
-      const { inject: injectFn } = require("@stackra/ts-container");
-      const emitter = injectFn(Symbol.for("EVENT_EMITTER"));
-      if (emitter && typeof emitter.emit === "function") {
-        emitter.emit(eventName, payload);
+      const emitter = inject(Symbol.for("EVENT_EMITTER"));
+      if (
+        emitter &&
+        typeof (emitter as { emit: unknown }).emit === "function"
+      ) {
+        (emitter as { emit: (name: string, payload: unknown) => void }).emit(
+          eventName,
+          payload,
+        );
       }
     } catch {
       // Events package not available
@@ -93,7 +100,11 @@ export function exposeCoordinatorTestGlobals(): void {
   win.__hasWebSocket = () => {
     try {
       const realtimeManager = inject(Symbol.for("REALTIME_MANAGER"));
-      return (realtimeManager as any)?.isConnectionActive?.() ?? false;
+      return (
+        (
+          realtimeManager as { isConnectionActive?: () => boolean }
+        )?.isConnectionActive?.() ?? false
+      );
     } catch {
       return false;
     }

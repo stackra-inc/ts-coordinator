@@ -13,9 +13,9 @@ import { TAB_COORDINATOR } from "@/constants";
 /**
  * React hook that returns the number of active tabs.
  *
- * Updates periodically as tabs join or leave.
+ * Subscribes to the reactive `tabCount$` observable for efficient updates
+ * without polling. Falls back to polling if the observable is unavailable.
  *
- * @param pollIntervalMs - How often to refresh the count (default: 2000ms)
  * @returns The number of active tabs
  *
  * @example
@@ -26,19 +26,20 @@ import { TAB_COORDINATOR } from "@/constants";
  * }
  * ```
  */
-export function useTabCount(pollIntervalMs: number = 2000): number {
+export function useTabCount(): number {
   const [count, setCount] = useState(1);
 
   useEffect(() => {
     const coordinator = inject<TabCoordinator>(TAB_COORDINATOR);
     setCount(coordinator.getTabCount());
 
-    const interval = setInterval(() => {
-      setCount(coordinator.getTabCount());
-    }, pollIntervalMs);
+    // Subscribe to reactive tab count changes
+    const subscription = coordinator.tabCount$.subscribe((newCount) => {
+      setCount(newCount);
+    });
 
-    return () => clearInterval(interval);
-  }, [pollIntervalMs]);
+    return () => subscription.unsubscribe();
+  }, []);
 
   return count;
 }

@@ -80,11 +80,23 @@ export interface CoordinatorModuleOptions {
    * Whether to prefer the Web Locks API for distributed locks
    * when available (Chrome 69+, Firefox 96+, Safari 15.4+).
    *
-   * Falls back to BroadcastChannel-based locking when unavailable.
+   * Falls back to localStorage-based locking when unavailable.
    *
    * @default true
    */
   preferWebLocks?: boolean;
+
+  /**
+   * Whether to use the Web Locks API for leader election when available.
+   *
+   * When true, leader election uses `navigator.locks.request()` which is
+   * race-free and provides instant failover when a tab closes (the lock
+   * is automatically released). Falls back to the heartbeat protocol
+   * when Web Locks is unavailable.
+   *
+   * @default true
+   */
+  preferWebLocksElection?: boolean;
 
   /**
    * Whether to transfer leadership to the focused/visible tab.
@@ -96,4 +108,24 @@ export interface CoordinatorModuleOptions {
    * @default false
    */
   preferVisibleLeader?: boolean;
+}
+
+/**
+ * Async factory for coordinator module options.
+ *
+ * Use with `CoordinatorModule.forRootAsync()` when configuration
+ * needs to be resolved asynchronously.
+ */
+export interface CoordinatorModuleAsyncOptions {
+  /**
+   * Factory function that returns the coordinator options.
+   */
+  useFactory: (
+    ...args: unknown[]
+  ) => Promise<CoordinatorModuleOptions> | CoordinatorModuleOptions;
+
+  /**
+   * Dependencies to inject into the factory function.
+   */
+  inject?: unknown[];
 }

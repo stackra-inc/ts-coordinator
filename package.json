@@ -8,6 +8,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/testing.cjs"
     }
   },
   "main": "./dist/index.cjs",
@@ -23,32 +28,30 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test"
   },
-  "dependencies": {
+  "peerDependencies": {
+    "react": "^19.2.6",
     "rxjs": "^7.8.2"
   },
-  "peerDependencies": {
-    "react": "^19.2.6"
-  },
   "peerDependenciesMeta": {
-    "@stackra/ts-events": {
-      "optional": true
-    },
-    "@stackra/ts-logger": {
-      "optional": false
-    },
     "react": {
       "optional": true
     }
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
-    "@stackra/testing": "workspace:*",
+    "@stackra/contracts": "github:stackra-inc/contracts#main",
+    "@stackra/testing": "github:stackra-inc/testing#main",
     "@stackra/ts-container": "github:stackra-inc/ts-container#main",
     "@stackra/ts-events": "github:stackra-inc/ts-events#main",
     "@stackra/ts-logger": "github:stackra-inc/ts-logger#main",
+    "@stackra/tsup-config": "^1.0.12",
     "@stackra/typescript-config": "^1.0.12",
+    "@types/node": "^25.9.1",
     "@types/react": "^19.2.14",
-    "react": "^19.2.6"
+    "react": "^19.2.6",
+    "rxjs": "^7.8.2",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
   },
   "author": {
     "name": "Stackra L.L.C",

@@ -7,7 +7,7 @@
  * - `TabCoordinator` — leader election and tab awareness
  * - `LockManager` — distributed locks across browser tabs
  * - `CoordinatorTransport` — cross-tab event relay for `@stackra/ts-events`
- * - `CoordinatorModule` — DI module with `forRoot()` configuration
+ * - `CoordinatorModule` — DI module with `forRoot()` / `forRootAsync()` configuration
  * - `@InjectCoordinator()` — decorator for TabCoordinator injection
  * - `@InjectLockManager()` — decorator for LockManager injection
  * - `useIsLeader` — React hook for leadership status
@@ -75,12 +75,21 @@ export { lock } from "./facades";
 // ============================================================================
 // Constants
 // ============================================================================
-export { COORDINATOR_CONFIG, TAB_COORDINATOR, TAB_LOCK_MANAGER } from "./constants";
+export {
+  COORDINATOR_CONFIG,
+  TAB_COORDINATOR,
+  TAB_LOCK_MANAGER,
+} from "./constants";
 
 // ============================================================================
 // Interfaces
 // ============================================================================
 export type { TabInfo, TabRole } from "./interfaces";
+export type {
+  CoordinatorModuleOptions,
+  CoordinatorModuleAsyncOptions,
+} from "./interfaces";
+export type { LockOptions } from "./services";
 
 // ============================================================================
 // Errors

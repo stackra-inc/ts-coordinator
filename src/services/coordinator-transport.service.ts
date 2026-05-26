@@ -13,7 +13,12 @@
  * @category Services
  */
 
-import { Injectable, Inject, Optional } from "@stackra/ts-container";
+import {
+  Injectable,
+  Inject,
+  Optional,
+  OnModuleDestroy,
+} from "@stackra/ts-container";
 import { EventTransport } from "@stackra/ts-events";
 import { COORDINATOR_CONFIG } from "@/constants";
 import type { CoordinatorModuleOptions } from "@/interfaces/coordinator-module-options.interface";
@@ -54,14 +59,19 @@ interface EventRelayMessage {
  */
 @EventTransport({ name: "coordinator" })
 @Injectable()
-export class CoordinatorTransport implements IEventTransport {
+export class CoordinatorTransport implements IEventTransport, OnModuleDestroy {
   private readonly logger = new Logger(CoordinatorTransport.name);
 
   /** BroadcastChannel for event relay. */
   private channel: BroadcastChannel | null = null;
 
   /** Reference to the local EventEmitter. */
-  private emitter: any = null;
+  private emitter: unknown = null;
+
+  /** Original emit function (stored for restoration on disconnect). */
+  private originalEmit:
+    | ((event: string | symbol, ...args: unknown[]) => boolean)
+    | null = null;
 
   /** Unique ID for this tab to prevent echo. */
   private readonly senderId: string;
@@ -78,9 +88,17 @@ export class CoordinatorTransport implements IEventTransport {
   /** Channel name for the event relay. */
   private readonly channelName: string;
 
-  constructor(@Optional() @Inject(COORDINATOR_CONFIG) config: CoordinatorModuleOptions = {}) {
+  constructor(
+    @Optional()
+    @Inject(COORDINATOR_CONFIG)
+    config: CoordinatorModuleOptions = {},
+  ) {
     this.senderId = this.generateId();
-    this.patterns = config.broadcastPatterns ?? ["sync:**", "auth:**", "state:**"];
+    this.patterns = config.broadcastPatterns ?? [
+      "sync:**",
+      "auth:**",
+      "state:**",
+    ];
     this.enabled = config.broadcastEvents ?? true;
     this.channelName = config.channelName ?? "stackra-coordinator";
   }
@@ -109,6 +127,7 @@ export class CoordinatorTransport implements IEventTransport {
       // Emit locally without re-broadcasting
       this.receiving = true;
       try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (this.emitter as any).emit(eventName, ...args);
       } finally {
         this.receiving = false;
@@ -116,36 +135,64 @@ export class CoordinatorTransport implements IEventTransport {
     };
 
     // Outgoing: hook into emitter for matching patterns
-    // We override emit to intercept outgoing events
     this.hookEmitter(emitter);
 
-    this.logger.info(`[CoordinatorTransport] Connected with patterns: ${this.patterns.join(", ")}`);
+    this.logger.info(
+      `[CoordinatorTransport] Connected with patterns: ${this.patterns.join(", ")}`,
+    );
   }
 
   /**
    * Disconnect the transport. Called during application shutdown.
+   *
+   * Restores the original emit method and closes the BroadcastChannel.
    */
   disconnect(): void {
+    // Restore original emit
+    if (this.emitter && this.originalEmit) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (this.emitter as any).emit = this.originalEmit;
+      this.originalEmit = null;
+    }
+
     this.channel?.close();
     this.channel = null;
     this.emitter = null;
   }
 
   /**
+   * Lifecycle hook — called by the DI container on module destroy.
+   */
+  onModuleDestroy(): void {
+    this.disconnect();
+  }
+
+  /**
    * Hook into the emitter to intercept outgoing events.
    *
    * Wraps the emitter's `emit` method to broadcast matching events
-   * to other tabs via BroadcastChannel.
+   * to other tabs via BroadcastChannel. Stores the original for
+   * restoration on disconnect.
    */
   private hookEmitter(emitter: unknown): void {
-    const originalEmit = (emitter as any).emit.bind(emitter);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const typedEmitter = emitter as any;
+    this.originalEmit = typedEmitter.emit.bind(typedEmitter);
+    const originalEmit = this.originalEmit!;
 
-    (emitter as any).emit = (event: string | symbol, ...args: unknown[]): boolean => {
+    typedEmitter.emit = (
+      event: string | symbol,
+      ...args: unknown[]
+    ): boolean => {
       // Call original emit first
       const result = originalEmit(event, ...args);
 
       // Broadcast to other tabs if not receiving and event matches patterns
-      if (!this.receiving && typeof event === "string" && this.matchesPatterns(event)) {
+      if (
+        !this.receiving &&
+        typeof event === "string" &&
+        this.matchesPatterns(event)
+      ) {
         this.broadcast(event, args);
       }
 
@@ -166,10 +213,11 @@ export class CoordinatorTransport implements IEventTransport {
         senderId: this.senderId,
       };
       this.channel.postMessage(message);
-    } catch (error: Error | any) {
+    } catch (error: unknown) {
       // Structured clone can fail for non-serializable data
+      const msg = error instanceof Error ? error.message : "Unknown error";
       this.logger.warn(
-        `[CoordinatorTransport] Failed to broadcast "${eventName}": ${error?.message}`,
+        `[CoordinatorTransport] Failed to broadcast "${eventName}": ${msg}`,
       );
     }
   }
@@ -178,12 +226,14 @@ export class CoordinatorTransport implements IEventTransport {
    * Check if an event name matches any of the configured broadcast patterns.
    */
   private matchesPatterns(eventName: string): boolean {
-    return this.patterns.some((pattern) => this.matchWildcard(pattern, eventName));
+    return this.patterns.some((pattern) =>
+      this.matchWildcard(pattern, eventName),
+    );
   }
 
   /**
    * Simple wildcard matching.
-   * - `*` matches one segment (delimited by `.`)
+   * - `*` matches one segment (delimited by `:`)
    * - `**` matches one or more segments
    */
   private matchWildcard(pattern: string, event: string): boolean {
@@ -193,7 +243,12 @@ export class CoordinatorTransport implements IEventTransport {
     return this.matchParts(patternParts, 0, eventParts, 0);
   }
 
-  private matchParts(pattern: string[], pi: number, event: string[], ei: number): boolean {
+  private matchParts(
+    pattern: string[],
+    pi: number,
+    event: string[],
+    ei: number,
+  ): boolean {
     if (pi === pattern.length && ei === event.length) return true;
     if (pi === pattern.length) return false;
 
@@ -234,7 +289,10 @@ export class CoordinatorTransport implements IEventTransport {
   }
 
   private generateId(): string {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    if (
+      typeof crypto !== "undefined" &&
+      typeof crypto.randomUUID === "function"
+    ) {
       return crypto.randomUUID();
     }
     return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;

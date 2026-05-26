@@ -1,11 +1,10 @@
-import { Logger } from "@stackra/ts-logger";
 /**
  * @fileoverview LocalStorageFallback — Fallback cross-tab messaging via storage events.
  *
  * Used when BroadcastChannel is unavailable (some WebViews, older environments).
  * Leverages the `storage` event which fires in all OTHER tabs when localStorage
- * is modified. Messages are written as JSON to a key, read by other tabs, then
- * cleaned up.
+ * is modified. Messages are written as JSON to unique keys, read by other tabs,
+ * then cleaned up periodically.
  *
  * Limitations vs BroadcastChannel:
  * - ~5ms latency (vs ~1ms for BroadcastChannel)
@@ -16,6 +15,8 @@ import { Logger } from "@stackra/ts-logger";
  * @module @stackra/ts-coordinator
  * @category Services
  */
+
+import { Logger } from "@stackra/ts-logger";
 
 /**
  * Message envelope stored in localStorage.
@@ -35,6 +36,9 @@ interface StorageMessage {
  * Drop-in replacement for BroadcastChannel when the native API is unavailable.
  * Implements the same `postMessage` / `onmessage` interface.
  *
+ * Uses unique keys per message to prevent rapid-fire message loss, with
+ * periodic cleanup of stale entries.
+ *
  * @example
  * ```typescript
  * const channel = new LocalStorageFallback("my-channel", "tab-123");
@@ -44,9 +48,11 @@ interface StorageMessage {
  */
 export class LocalStorageFallback {
   private readonly logger = new Logger(LocalStorageFallback.name);
-  private readonly storageKey: string;
+  private readonly storagePrefix: string;
   private readonly storageHandler: (event: StorageEvent) => void;
+  private readonly cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
+  private messageCounter = 0;
 
   /** Callback for incoming messages (mirrors BroadcastChannel API). */
   public onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -55,12 +61,12 @@ export class LocalStorageFallback {
     public readonly name: string,
     private readonly senderId: string,
   ) {
-    this.storageKey = `__coordinator_msg__${name}`;
+    this.storagePrefix = `__coordinator_msg__${name}__`;
 
     // Listen for storage events from other tabs
     this.storageHandler = (event: StorageEvent) => {
       if (this.closed) return;
-      if (event.key !== this.storageKey) return;
+      if (!event.key || !event.key.startsWith(this.storagePrefix)) return;
       if (!event.newValue) return;
 
       try {
@@ -80,14 +86,17 @@ export class LocalStorageFallback {
 
     if (typeof window !== "undefined") {
       window.addEventListener("storage", this.storageHandler);
+
+      // Periodic cleanup of stale messages (every 5 seconds)
+      this.cleanupTimer = setInterval(() => this.cleanup(), 5000);
     }
   }
 
   /**
    * Post a message to all other tabs via localStorage.
    *
-   * Writes the message to localStorage (triggering `storage` events in
-   * other tabs), then immediately removes it to avoid accumulation.
+   * Writes the message to a unique localStorage key (triggering `storage`
+   * events in other tabs). Messages are cleaned up periodically.
    */
   postMessage(data: unknown): void {
     if (this.closed) return;
@@ -99,21 +108,23 @@ export class LocalStorageFallback {
       at: Date.now(),
     };
 
-    try {
-      // Write triggers `storage` event in other tabs
-      localStorage.setItem(this.storageKey, JSON.stringify(message));
+    // Use a unique key per message to prevent overwriting
+    const key = `${this.storagePrefix}${Date.now()}_${this.messageCounter++}`;
 
-      // Clean up immediately — we only need the event, not the persisted value
-      // Use setTimeout to ensure the event fires before removal
+    try {
+      localStorage.setItem(key, JSON.stringify(message));
+
+      // Schedule cleanup of this specific message after a short delay
       setTimeout(() => {
         try {
-          localStorage.removeItem(this.storageKey);
+          localStorage.removeItem(key);
         } catch {
           /* ignore */
         }
-      }, 50);
-    } catch (error: Error | any) {
-      this.logger.warn(`[LocalStorageFallback] Failed to post message: ${error?.message}`);
+      }, 500);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      this.logger.warn(`[LocalStorageFallback] Failed to post message: ${msg}`);
     }
   }
 
@@ -124,8 +135,49 @@ export class LocalStorageFallback {
     this.closed = true;
     this.onmessage = null;
 
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+    }
+
     if (typeof window !== "undefined") {
       window.removeEventListener("storage", this.storageHandler);
+    }
+  }
+
+  /**
+   * Remove stale messages from localStorage.
+   */
+  private cleanup(): void {
+    if (typeof localStorage === "undefined") return;
+
+    const now = Date.now();
+    const keysToRemove: string[] = [];
+
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(this.storagePrefix)) continue;
+
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+
+        const message: StorageMessage = JSON.parse(raw);
+        // Remove messages older than 10 seconds
+        if (now - message.at > 10000) {
+          keysToRemove.push(key);
+        }
+      } catch {
+        // Remove malformed entries
+        keysToRemove.push(key);
+      }
+    }
+
+    for (const key of keysToRemove) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        /* ignore */
+      }
     }
   }
 }

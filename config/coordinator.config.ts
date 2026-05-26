@@ -4,7 +4,7 @@
  * Cross-tab coordination settings: leader election, distributed locks,
  * and event relay configuration.
  *
- * ## Environment Variables
+ * ## Environment Variables (Vite)
  *
  * | Variable                              | Description                          | Default                  |
  * |---------------------------------------|--------------------------------------|--------------------------|
@@ -27,6 +27,34 @@
  */
 
 import { defineConfig } from "@stackra/ts-coordinator";
+
+/**
+ * Read a Vite environment variable with a typed default.
+ */
+function env(key: string, defaultValue: string): string;
+function env(key: string, defaultValue: number): number;
+function env(key: string, defaultValue: boolean): boolean;
+function env(
+  key: string,
+  defaultValue: string | number | boolean,
+): string | number | boolean {
+  const raw =
+    typeof import.meta !== "undefined" &&
+    (import.meta as Record<string, unknown>).env
+      ? (
+          (import.meta as Record<string, unknown>).env as Record<
+            string,
+            string | undefined
+          >
+        )[key]
+      : undefined;
+
+  if (raw === undefined || raw === "") return defaultValue;
+
+  if (typeof defaultValue === "number") return Number(raw) || defaultValue;
+  if (typeof defaultValue === "boolean") return raw === "true" || raw === "1";
+  return raw;
+}
 
 const coordinatorConfig = defineConfig({
   /*
@@ -97,6 +125,17 @@ const coordinatorConfig = defineConfig({
   |
   */
   preferWebLocks: env("VITE_COORDINATOR_PREFER_WEB_LOCKS", true),
+
+  /*
+  |--------------------------------------------------------------------------
+  | Web Locks Election
+  |--------------------------------------------------------------------------
+  |
+  | Whether to use the Web Locks API for leader election (race-free,
+  | instant failover). Falls back to heartbeat protocol when unavailable.
+  |
+  */
+  preferWebLocksElection: env("VITE_COORDINATOR_PREFER_WEB_LOCKS", true),
 
   /*
   |--------------------------------------------------------------------------

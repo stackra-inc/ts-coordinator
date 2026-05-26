@@ -5,5 +5,8 @@
  * @category Interfaces
  */
 
-export type { CoordinatorModuleOptions } from "./coordinator-module-options.interface";
+export type {
+  CoordinatorModuleOptions,
+  CoordinatorModuleAsyncOptions,
+} from "./coordinator-module-options.interface";
 export type { TabInfo, TabRole } from "./tab-info.interface";

@@ -5,13 +5,18 @@
  * run in one tab at a time (sync, auth token refresh, IndexedDB migrations).
  *
  * Uses the Web Locks API when available (Chrome 69+, Firefox 96+, Safari 15.4+),
- * falls back to a BroadcastChannel-based lock protocol.
+ * falls back to a localStorage-based lock protocol.
  *
  * @module @stackra/ts-coordinator
  * @category Services
  */
 
-import { Injectable, Inject, Optional } from "@stackra/ts-container";
+import {
+  Injectable,
+  Inject,
+  Optional,
+  OnModuleDestroy,
+} from "@stackra/ts-container";
 import { COORDINATOR_CONFIG } from "@/constants";
 import type { CoordinatorModuleOptions } from "@/interfaces/coordinator-module-options.interface";
 import { CoordinatorError } from "@/errors/coordinator.error";
@@ -36,11 +41,18 @@ import { CoordinatorError } from "@/errors/coordinator.error";
  * ```
  */
 @Injectable()
-export class LockManager {
+export class LockManager implements OnModuleDestroy {
   private readonly preferWebLocks: boolean;
   private readonly channelName: string;
 
-  constructor(@Optional() @Inject(COORDINATOR_CONFIG) config: CoordinatorModuleOptions = {}) {
+  /** Track active abort controllers for cleanup. */
+  private readonly activeControllers: Set<AbortController> = new Set();
+
+  constructor(
+    @Optional()
+    @Inject(COORDINATOR_CONFIG)
+    config: CoordinatorModuleOptions = {},
+  ) {
     this.preferWebLocks = config.preferWebLocks ?? true;
     this.channelName = config.channelName ?? "stackra-coordinator";
   }
@@ -96,6 +108,17 @@ export class LockManager {
     return state.held?.some((lock) => lock.name === lockName) ?? false;
   }
 
+  /**
+   * Lifecycle hook — called by the DI container on module destroy.
+   */
+  onModuleDestroy(): void {
+    // Abort all pending lock acquisitions
+    for (const controller of this.activeControllers) {
+      controller.abort();
+    }
+    this.activeControllers.clear();
+  }
+
   // ── Web Locks Implementation ────────────────────────────────────────────
 
   /**
@@ -108,24 +131,29 @@ export class LockManager {
   ): Promise<T> {
     const { timeoutMs } = options;
 
-    const lockOptions: { mode: "exclusive" | "shared"; signal?: AbortSignal } = {
-      mode: "exclusive",
-    };
+    const lockOptions: { mode: "exclusive" | "shared"; signal?: AbortSignal } =
+      {
+        mode: "exclusive",
+      };
 
     if (timeoutMs) {
-      // Use AbortController for timeout
       const controller = new AbortController();
+      this.activeControllers.add(controller);
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       lockOptions.signal = controller.signal;
 
       try {
-        return await navigator.locks.request(lockName, lockOptions, async () => {
-          clearTimeout(timer);
-          return await callback();
-        });
-      } catch (error: Error | any) {
+        return await navigator.locks.request(
+          lockName,
+          lockOptions,
+          async () => {
+            clearTimeout(timer);
+            return await callback();
+          },
+        );
+      } catch (error: unknown) {
         clearTimeout(timer);
-        if (error.name === "AbortError") {
+        if (error instanceof Error && error.name === "AbortError") {
           throw new CoordinatorError(
             `Lock "${lockName}" acquisition timed out after ${timeoutMs}ms`,
             "LOCK_TIMEOUT",
@@ -133,6 +161,8 @@ export class LockManager {
           );
         }
         throw error;
+      } finally {
+        this.activeControllers.delete(controller);
       }
     }
 
@@ -192,7 +222,7 @@ export class LockManager {
         );
       }
 
-      // Wait and retry
+      // Wait and retry with jitter
       await this.sleep(100 + Math.random() * 100);
     }
   }
